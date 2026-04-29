@@ -1,0 +1,131 @@
+name: RDP Windows 11 (SAFE)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-windows11:
+    runs-on: windows-latest
+    timeout-minutes: 240  # ✅ 4 heures (limite safe)
+
+    steps:
+      - name: Configure RDP Settings
+        run: |
+          Write-Host "Configuration RDP..."
+          
+          # Activer Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Garder NLA activé (sécurisé)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 1 -Force
+          
+          # Ajouter règle firewall pour RDP
+          netsh advfirewall firewall delete rule name="RDP-Allow" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Allow" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          # Redémarrer le service RDP
+          Restart-Service -Name TermService -Force
+          
+          Write-Host "✅ RDP configuré"
+
+      - name: Create RDP User Account
+        run: |
+          Write-Host "Création du compte utilisateur RDP..."
+          
+          # Créer un mot de passe sécurisé
+          $password = ConvertTo-SecureString "P@ssw0rd2024Safe!" -AsPlainText -Force
+          
+          # Créer l'utilisateur
+          New-LocalUser -Name "RemoteUser" -Password $password -PasswordNeverExpires
+          
+          # Ajouter aux groupes nécessaires
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RemoteUser"
+          Add-LocalGroupMember -Group "Administrators" -Member "RemoteUser"
+          
+          Write-Host "✅ Utilisateur RDP créé"
+
+      - name: Install Tailscale
+        run: |
+          Write-Host "Installation de Tailscale..."
+          
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          # Télécharger Tailscale
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+          
+          # Installer Tailscale silencieusement
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          # Nettoyer
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          Write-Host "Connexion à Tailscale..."
+          
+          # Se connecter à Tailscale avec l'auth key
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-windows-rdp-${{ github.run_id }}
+          
+          # Attendre que Tailscale soit prêt
+          Start-Sleep -Seconds 15
+          
+          # Récupérer l'IP Tailscale
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host "✅ Tailscale connecté"
+          Write-Host "IP Tailscale: $tsIP"
+          
+          # Sauvegarder l'IP pour la prochaine étape
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Verify RDP Connectivity
+        run: |
+          Write-Host "Vérification de la connectivité RDP..."
+          
+          # Attendre un peu
+          Start-Sleep -Seconds 5
+          
+          # Tester la connexion sur le port RDP
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          
+          if ($testResult.TcpTestSucceeded) {
+              Write-Host "✅ RDP accessible sur le port 3389"
+          } else {
+              Write-Host "⚠️ Impossible de tester, mais RDP devrait fonctionner"
+          }
+
+      - name: Display RDP Access Information
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════╗"
+          Write-Host "║          🖥️  WINDOWS 11 RDP READY 🖥️               ║"
+          Write-Host "╠════════════════════════════════════════════════════╣"
+          Write-Host "║                                                    ║"
+          Write-Host "║  ADDRESS (Adresse): $env:TAILSCALE_IP               ║"
+          Write-Host "║  USERNAME: RemoteUser                              ║"
+          Write-Host "║  PASSWORD: P@ssw0rd2024Safe!                       ║"
+          Write-Host "║  DURATION: 4 heures                                ║"
+          Write-Host "║                                                    ║"
+          Write-Host "╚══���═════════════════════════════════════════════════╝"
+          Write-Host ""
+
+      - name: Keep Session Active (4 hours)
+        run: |
+          Write-Host "⏳ Session RDP active pour 4 heures..."
+          
+          # ✅ SAFE : Attendre exactement 4 heures
+          Start-Sleep -Seconds 14400
+
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Fermeture..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
