@@ -1,0 +1,189 @@
+name: Roblox Cloud Gaming
+
+on:
+  workflow_dispatch:
+
+jobs:
+  roblox-gaming:
+    runs-on: windows-latest
+    timeout-minutes: 240  # 4 heures
+
+    steps:
+      - name: Configure Gaming Environment
+        run: |
+          Write-Host "Configuration de l'environnement Roblox..."
+          
+          # Désactiver l'économiseur d'écran
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change disk-timeout-ac 0
+          
+          Write-Host "✅ Environnement configuré"
+
+      - name: Install VNC Server
+        run: |
+          Write-Host "Installation de VNC Server..."
+          
+          # Télécharger TightVNC
+          $vncUrl = "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi"
+          $installerPath = "$env:TEMP\tightvnc.msi"
+          
+          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath -ErrorAction Stop
+          
+          # Installer TightVNC silencieusement
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ VNC Server installé"
+
+      - name: Configure VNC Server
+        run: |
+          Write-Host "Configuration de VNC..."
+          
+          # Configurer VNC pour l'accès sans authentification (pour test)
+          # ATTENTION: À utiliser avec Tailscale seulement !
+          
+          $regPath = "HKLM:\Software\TightVNC\Server"
+          
+          # Créer les clés de registre si elles n'existent pas
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+          }
+          
+          # Configurer VNC
+          Set-ItemProperty -Path $regPath -Name "HttpPort" -Value 6080 -Force
+          Set-ItemProperty -Path $regPath -Name "PortNumber" -Value 5900 -Force
+          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Force
+          
+          # Démarrer VNC Server
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ VNC configuré"
+
+      - name: Install Roblox Studio
+        run: |
+          Write-Host "Installation de Roblox Studio..."
+          
+          # Télécharger Roblox Studio
+          $robloxUrl = "https://www.robloxlabs.com/downloads/studio/RobloxStudio.exe"
+          $robloxPath = "$env:TEMP\RobloxStudio.exe"
+          
+          Write-Host "Téléchargement de Roblox Studio..."
+          Invoke-WebRequest -Uri $robloxUrl -OutFile $robloxPath -ErrorAction Stop
+          
+          Write-Host "Installation en cours..."
+          Start-Process -FilePath $robloxPath -ArgumentList "/S" -Wait
+          
+          Remove-Item $robloxPath -Force
+          
+          Write-Host "✅ Roblox Studio installé"
+
+      - name: Install Tailscale
+        run: |
+          Write-Host "Installation de Tailscale..."
+          
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          Write-Host "Connexion à Tailscale..."
+          
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=roblox-gaming-${{ github.run_id }}
+          
+          Start-Sleep -Seconds 15
+          
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host "✅ Tailscale connecté: $tsIP"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Install Graphics Drivers
+        run: |
+          Write-Host "Optimisation des drivers graphiques..."
+          
+          # Les drivers sont déjà installés sur Windows Server
+          # Mais on optimise les paramètres
+          
+          # Activer l'accélération matérielle si possible
+          Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\OpenGL" `
+            -Name "DriverBehaviorOnReset" -Value "Auto" -Force -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ Optimisation terminée"
+
+      - name: Display Gaming Info
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════╗"
+          Write-Host "║        🎮  ROBLOX CLOUD GAMING READY 🎮            ║"
+          Write-Host "╠════════════════════════════════════════════════════╣"
+          Write-Host "║                                                    ║"
+          Write-Host "║  VNC ACCESS (Streaming):                           ║"
+          Write-Host "║  Address: $env:TAILSCALE_IP:5900                   ║"
+          Write-Host "║  Port: 5900                                        ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  APPLICATIONS INSTALLED:                           ║"
+          Write-Host "║  ✅ Roblox Studio                                  ║"
+          Write-Host "║  ✅ TightVNC Server                                ║"
+          Write-Host "║  ✅ Tailscale VPN                                  ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  HOW TO CONNECT (Comment se connecter):            ║"
+          Write-Host "║  1. Installez VNC Viewer (gratuit)                 ║"
+          Write-Host "║  2. Connectez à: $env:TAILSCALE_IP:5900            ║"
+          Write-Host "║  3. Lancez Roblox Studio sur le bureau             ║"
+          Write-Host "║  4. Jouez en streaming !                           ���"
+          Write-Host "║                                                    ║"
+          Write-Host "║  DURATION: 4 heures                                ║"
+          Write-Host "║                                                    ║"
+          Write-Host "╚════════════════════════════════════════════════════╝"
+          Write-Host ""
+
+      - name: Start VNC Display Server
+        run: |
+          Write-Host "Démarrage du serveur d'affichage VNC..."
+          
+          # Démarrer le service VNC
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          Start-Service -Name TVNWebServer -ErrorAction SilentlyContinue
+          
+          Start-Sleep -Seconds 5
+          
+          Write-Host "✅ VNC Server actif sur port 5900"
+          Write-Host "✅ Prêt à jouer !"
+
+      - name: Keep Gaming Session Active (4 hours)
+        run: |
+          Write-Host ""
+          Write-Host "🎮 Session Roblox Cloud Gaming active..."
+          Write-Host "Connectez-vous via VNC et commencez à jouer !"
+          Write-Host ""
+          
+          # Garder la session active 4 heures
+          $startTime = Get-Date
+          $endTime = $startTime.AddHours(4)
+          
+          while ((Get-Date) -lt $endTime) {
+              $remaining = $endTime - (Get-Date)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⏱️  Temps restant: $($remaining.Hours)h $($remaining.Minutes)m"
+              Start-Sleep -Seconds 60
+          }
+          
+          Write-Host ""
+          Write-Host "✅ Session Roblox terminée"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Fermeture..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Fermeture complète"
