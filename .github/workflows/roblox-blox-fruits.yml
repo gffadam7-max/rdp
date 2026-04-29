@@ -1,0 +1,167 @@
+name: Roblox Blox Fruits Cloud Gaming
+
+on:
+  workflow_dispatch:
+
+jobs:
+  roblox-gaming:
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Configure Gaming Environment
+        run: |
+          Write-Host "Configuration de l'environnement de jeu..."
+          
+          # Désactiver l'économiseur d'écran
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change disk-timeout-ac 0
+          
+          Write-Host "✅ Environnement configuré"
+
+      - name: Install VNC Server
+        run: |
+          Write-Host "Installation de VNC Server..."
+          
+          $vncUrl = "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi"
+          $installerPath = "$env:TEMP\tightvnc.msi"
+          
+          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ VNC Server installé"
+
+      - name: Configure VNC Server
+        run: |
+          Write-Host "Configuration de VNC..."
+          
+          $regPath = "HKLM:\Software\TightVNC\Server"
+          
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+          }
+          
+          Set-ItemProperty -Path $regPath -Name "HttpPort" -Value 6080 -Force
+          Set-ItemProperty -Path $regPath -Name "PortNumber" -Value 5900 -Force
+          
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          
+          Write-Host "✅ VNC configuré"
+
+      - name: Install Roblox Player
+        run: |
+          Write-Host "Installation de Roblox Player..."
+          
+          # La façon officielle d'installer Roblox sur Windows Server
+          # Via le Microsoft Store ou le site officiel
+          
+          # On utilise le lien officiel Roblox
+          $robloxUrl = "https://roblox.com/download/client"
+          $robloxPath = "$env:TEMP\RobloxPlayerLauncher.exe"
+          
+          Write-Host "Téléchargement de Roblox..."
+          try {
+              Invoke-WebRequest -Uri $robloxUrl -OutFile $robloxPath -ErrorAction Stop
+              
+              Write-Host "Installation en cours..."
+              Start-Process -FilePath $robloxPath -ArgumentList "/S" -Wait -NoNewWindow
+              
+              Remove-Item $robloxPath -Force
+              
+              Write-Host "✅ Roblox Player installé"
+          } catch {
+              Write-Host "⚠️ Roblox non trouvé, installation manuelle requise"
+              Write-Host "Le jeu peut être lancé manuellement après connexion VNC"
+          }
+
+      - name: Install Tailscale
+        run: |
+          Write-Host "Installation de Tailscale..."
+          
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          Write-Host "Connexion à Tailscale..."
+          
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=roblox-blox-fruits-${{ github.run_id }}
+          
+          Start-Sleep -Seconds 15
+          
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host "✅ Tailscale connecté: $tsIP"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Display Gaming Info
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════╗"
+          Write-Host "║     🎮  ROBLOX BLOX FRUITS CLOUD GAMING 🎮        ║"
+          Write-Host "╠════════════════════════════════════════════════════╣"
+          Write-Host "║                                                    ║"
+          Write-Host "║  VNC ACCESS (Streaming du jeu):                    ║"
+          Write-Host "║  Address: $env:TAILSCALE_IP:5900                   ║"
+          Write-Host "║  Port: 5900                                        ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  HOW TO CONNECT (Comment se connecter):            ║"
+          Write-Host "║  1. Installez VNC Viewer (gratuit)                 ║"
+          Write-Host "║  2. Connectez à: $env:TAILSCALE_IP:5900            ║"
+          Write-Host "║  3. Ouvrez un navigateur (Edge, Chrome)            ║"
+          Write-Host "║  4. Allez sur: roblox.com                          ║"
+          Write-Host "║  5. Connectez-vous à votre compte                  ║"
+          Write-Host "║  6. Lancez Blox Fruits !                           ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  DURÉE: 4 heures gratuites                         ║"
+          Write-Host "║                                                    ║"
+          Write-Host "╚════════════════════════════════════════════════════╝"
+          Write-Host ""
+
+      - name: Start VNC Display Server
+        run: |
+          Write-Host "Démarrage du serveur VNC..."
+          
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          Start-Service -Name TVNWebServer -ErrorAction SilentlyContinue
+          
+          Start-Sleep -Seconds 5
+          
+          Write-Host "✅ VNC Server actif sur port 5900"
+          Write-Host "✅ Prêt à jouer !"
+
+      - name: Keep Gaming Session Active (4 hours)
+        run: |
+          Write-Host ""
+          Write-Host "🎮 Session Blox Fruits Cloud Gaming active..."
+          Write-Host "Connectez-vous via VNC et jouez !"
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $endTime = $startTime.AddHours(4)
+          
+          while ((Get-Date) -lt $endTime) {
+              $remaining = $endTime - (Get-Date)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⏱️  Temps restant: $($remaining.Hours)h $($remaining.Minutes)m"
+              Start-Sleep -Seconds 60
+          }
+          
+          Write-Host ""
+          Write-Host "✅ Session terminée"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Fermeture..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Fermeture complète"
