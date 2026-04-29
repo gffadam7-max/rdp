@@ -1,0 +1,178 @@
+name: Roblox Blox Fruits Cloud Gaming (Avec Mot de Passe)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  roblox-gaming:
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Generate Secure VNC Password
+        run: |
+          Write-Host "Génération d'un mot de passe sécurisé..."
+          
+          # Générer un mot de passe aléatoire de 8 caractères
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+          }
+          
+          $password = @()
+          $password += $charSet.Upper | Get-Random -Count 2
+          $password += $charSet.Lower | Get-Random -Count 3
+          $password += $charSet.Number | Get-Random -Count 3
+          $vncPassword = -join ($password | Sort-Object { Get-Random })
+          
+          Write-Host "Mot de passe généré: $vncPassword"
+          echo "VNC_PASSWORD=$vncPassword" >> $env:GITHUB_ENV
+
+      - name: Configure Gaming Environment
+        run: |
+          Write-Host "Configuration de l'environnement de jeu..."
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change disk-timeout-ac 0
+          Write-Host "✅ Environnement configuré"
+
+      - name: Install VNC Server
+        run: |
+          Write-Host "Installation de VNC Server..."
+          $vncUrl = "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi"
+          $installerPath = "$env:TEMP\tightvnc.msi"
+          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "✅ VNC Server installé"
+
+      - name: Configure VNC Server WITH Password
+        run: |
+          Write-Host "Configuration de VNC avec mot de passe..."
+          Write-Host "Mot de passe VNC: $env:VNC_PASSWORD"
+          
+          Start-Sleep -Seconds 3
+          
+          $regPath = "HKLM:\Software\TightVNC\Server"
+          
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+              Start-Sleep -Seconds 1
+          }
+          
+          try {
+              # Configurer les paramètres VNC
+              Set-ItemProperty -Path $regPath -Name "PortNumber" -Value 5900 -Force
+              Set-ItemProperty -Path $regPath -Name "HttpPort" -Value 6080 -Force
+              Set-ItemProperty -Path $regPath -Name "DisconnectAction" -Value 0 -Force
+              Set-ItemProperty -Path $regPath -Name "PollingInterval" -Value 100 -Force
+              Set-ItemProperty -Path $regPath -Name "QueryConnectionOnConnect" -Value 0 -Force
+              Set-ItemProperty -Path $regPath -Name "QueryTimeout" -Value 10 -Force
+              
+              # Configurer le mot de passe VNC
+              Set-ItemProperty -Path $regPath -Name "Password" -Value $env:VNC_PASSWORD -Force
+              
+              Write-Host "✅ VNC configuré avec mot de passe"
+          } catch {
+              Write-Host "⚠️ Erreur: $_"
+          }
+
+      - name: Start VNC Service
+        run: |
+          Write-Host "Démarrage du service VNC..."
+          
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          
+          Write-Host "✅ Service VNC démarré"
+
+      - name: Install Tailscale
+        run: |
+          Write-Host "Installation de Tailscale..."
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          Write-Host "Connexion à Tailscale..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=roblox-blox-fruits-${{ github.run_id }}
+          
+          Start-Sleep -Seconds 15
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host "✅ Tailscale connecté: $tsIP"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Display Gaming Info With Password
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════╗"
+          Write-Host "║     🎮  ROBLOX BLOX FRUITS CLOUD GAMING 🎮        ║"
+          Write-Host "╠════════════════════════════════════════════════════╣"
+          Write-Host "║                                                    ║"
+          Write-Host "║  🔐 VNC ACCESS CREDENTIALS:                        ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  Address (Adresse):                                ║"
+          Write-Host "║  $env:TAILSCALE_IP:5900                            ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  Port:                                             ║"
+          Write-Host "║  5900                                              ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  Password (Mot de passe):                          ║"
+          Write-Host "║  $env:VNC_PASSWORD                                 ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  HOW TO CONNECT (Comment se connecter):            ║"
+          Write-Host "║  1. Installez VNC Viewer (gratuit)                 ║"
+          Write-Host "║  2. Ouvrez VNC Viewer                              ║"
+          Write-Host "║  3. Entrez: $env:TAILSCALE_IP:5900                 ║"
+          Write-Host "║  4. Cliquez "CONNECT"                              ║"
+          Write-Host "║  5. Entrez le mot de passe: $env:VNC_PASSWORD      ║"
+          Write-Host "║  6. Ouvrez navigateur → roblox.com                 ║"
+          Write-Host "║  7. Connectez-vous à votre compte                  ║"
+          Write-Host "║  8. Lancez Blox Fruits ! 🎮                        ║"
+          Write-Host "║                                                    ║"
+          Write-Host "║  DURÉE: 4 heures gratuites                         ║"
+          Write-Host "║  ⏱️  Le serveur s'arrête automatiquement après     ║"
+          Write-Host "║                                                    ║"
+          Write-Host "╚════════════════════════════════════════════════════╝"
+          Write-Host ""
+
+      - name: Keep Gaming Session Active (4 hours)
+        run: |
+          Write-Host ""
+          Write-Host "🎮 Session Blox Fruits Cloud Gaming active..."
+          Write-Host "Mot de passe: $env:VNC_PASSWORD"
+          Write-Host "Adresse: $env:TAILSCALE_IP:5900"
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $endTime = $startTime.AddHours(4)
+          
+          while ((Get-Date) -lt $endTime) {
+              $remaining = $endTime - (Get-Date)
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⏱️  Temps restant: $($remaining.Hours)h $($remaining.Minutes)m - Mot de passe: $env:VNC_PASSWORD"
+              Start-Sleep -Seconds 60
+          }
+          
+          Write-Host ""
+          Write-Host "✅ Session terminée"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Fermeture..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Fermeture complète"
