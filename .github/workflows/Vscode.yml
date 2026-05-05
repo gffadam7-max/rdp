@@ -1,0 +1,106 @@
+name: VS Code Web (Code-Server) Public
+
+on:
+  workflow_dispatch:
+
+jobs:
+  vscode-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Generate Secure Password
+        run: |
+          echo "Génération du mot de passe..."
+          PASSWORD=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
+          echo "VSCODE_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+          echo "✅ Mot de passe généré: $PASSWORD"
+
+      - name: Install code-server
+        run: |
+          echo "Installation de code-server..."
+          curl -fsSL https://code-server.dev/install.sh | sh
+          echo "✅ code-server installé"
+
+      - name: Configure code-server
+        run: |
+          echo "Configuration de code-server..."
+          mkdir -p ~/.config/code-server
+          cat > ~/.config/code-server/config.yaml <<EOF
+          bind-addr: 0.0.0.0:8080
+          auth: password
+          password: $VSCODE_PASSWORD
+          cert: false
+          EOF
+          echo "✅ code-server configuré"
+
+      - name: Install Tailscale
+        run: |
+          echo "Installation de Tailscale..."
+          curl -fsSL https://tailscale.com/install.sh | sh
+          echo "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          echo "Connexion à Tailscale..."
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=vscode-web-${{ github.run_id }}
+          sleep 10
+          TAILSCALE_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
+          echo "✅ Tailscale connecté: $TAILSCALE_IP"
+
+      - name: Start code-server in Background
+        run: |
+          echo "Démarrage de code-server..."
+          code-server &
+          sleep 5
+          echo "✅ code-server démarré"
+
+      - name: Display VS Code Access Information
+        run: |
+          cat << 'EOF'
+          
+          ╔════════════════════════════════════════════════════════════════╗
+          ║          💻  VS CODE WEB (code-server) 💻                      ║
+          ╠════════════════════════════════════════════════════════════════╣
+          ║                                                                ║
+          ║  🔐 ACCÈS SÉCURISÉ VIA TAILSCALE:                              ║
+          ║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║
+          ║                                                                ║
+          ║  URL: http://TAILSCALE_IP:8080                                 ║
+          ║  Password: $VSCODE_PASSWORD                                    ║
+          ║                                                                ║
+          ║  📱 COMMENT SE CONNECTER:                                       ║
+          ║  1. Ouvrez votre navigateur                                    ║
+          ║  2. Allez à: http://TAILSCALE_IP:8080                          ║
+          ║  3. Entrez le mot de passe                                     ║
+          ║  4. VS Code se charge ! 🎉                                     ║
+          ║                                                                ║
+          ║  ⏱️  DURÉE: 4 heures gratuites                                 ║
+          ║                                                                ║
+          ╚════════════════════════════════════════════════════════════════╝
+          
+EOF
+
+      - name: Keep VS Code Active (4 hours)
+        run: |
+          echo "🚀 VS Code Web actif pendant 4 heures..."
+          START_TIME=$(date +%s)
+          END_TIME=$((START_TIME + 14400))
+          while [ $(date +%s) -lt $END_TIME ]; do
+              REMAINING=$((END_TIME - $(date +%s)))
+              HOURS=$((REMAINING / 3600))
+              MINUTES=$(((REMAINING % 3600) / 60))
+              echo "[$(date +'%H:%M:%S')] ⏱️  Temps restant: ${HOURS}h ${MINUTES}m"
+              sleep 60
+          done
+          echo "✅ Session VS Code terminée"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Fermeture..."
+          pkill -f code-server
+          sudo tailscale logout
+          echo "✅ Fermeture complète"
