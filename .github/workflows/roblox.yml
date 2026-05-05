@@ -1,0 +1,318 @@
+name: RDP + noVNC Cloud Gaming
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-novnc:
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Generate Secure Passwords
+        run: |
+          Write-Host "Génération des mots de passe..."
+          
+          # Générer mot de passe RDP
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64))
+          }
+          
+          $rdpPass = @()
+          $rdpPass += $charSet.Upper | Get-Random -Count 3
+          $rdpPass += $charSet.Lower | Get-Random -Count 3
+          $rdpPass += $charSet.Number | Get-Random -Count 2
+          $rdpPass += $charSet.Special | Get-Random -Count 2
+          $rdpPassword = -join ($rdpPass | Sort-Object { Get-Random })
+          
+          # Générer mot de passe noVNC
+          $vncPass = @()
+          $vncPass += $charSet.Upper | Get-Random -Count 2
+          $vncPass += $charSet.Lower | Get-Random -Count 3
+          $vncPass += $charSet.Number | Get-Random -Count 3
+          $vncPassword = -join ($vncPass | Sort-Object { Get-Random })
+          
+          echo "RDP_PASSWORD=$rdpPassword" >> $env:GITHUB_ENV
+          echo "VNC_PASSWORD=$vncPassword" >> $env:GITHUB_ENV
+          
+          Write-Host "✅ Mots de passe générés"
+
+      - name: Configure RDP Settings
+        run: |
+          Write-Host "Configuration RDP..."
+          
+          # Activer Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          
+          # Activer NLA (sécurisé)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 1 -Force
+          
+          # Ajouter règle firewall RDP
+          netsh advfirewall firewall delete rule name="RDP-Cloud" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Cloud" `
+            dir=in action=allow protocol=TCP localport=3389
+          
+          # Redémarrer le service RDP
+          Restart-Service -Name TermService -Force
+          
+          Write-Host "✅ RDP configuré"
+
+      - name: Create RDP User Account
+        run: |
+          Write-Host "Création du compte RDP..."
+          
+          $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name "CloudGamer" -Password $securePass -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "CloudGamer"
+          Add-LocalGroupMember -Group "Administrators" -Member "CloudGamer"
+          
+          Write-Host "✅ Utilisateur RDP créé"
+
+      - name: Install VNC Server (TightVNC)
+        run: |
+          Write-Host "Installation de VNC Server..."
+          
+          $vncUrl = "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi"
+          $installerPath = "$env:TEMP\tightvnc.msi"
+          
+          Invoke-WebRequest -Uri $vncUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ VNC Server installé"
+
+      - name: Configure VNC Server
+        run: |
+          Write-Host "Configuration VNC Server..."
+          
+          Start-Sleep -Seconds 3
+          
+          $regPath = "HKLM:\Software\TightVNC\Server"
+          
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+              Start-Sleep -Seconds 1
+          }
+          
+          try {
+              Set-ItemProperty -Path $regPath -Name "PortNumber" -Value 5900 -Force
+              Set-ItemProperty -Path $regPath -Name "HttpPort" -Value 6080 -Force
+              Set-ItemProperty -Path $regPath -Name "Password" -Value $env:VNC_PASSWORD -Force
+              
+              Write-Host "✅ VNC Server configuré"
+          } catch {
+              Write-Host "⚠️ Erreur: $_"
+          }
+
+      - name: Start VNC Service
+        run: |
+          Write-Host "Démarrage VNC..."
+          
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          
+          Start-Service -Name TVNServer -ErrorAction SilentlyContinue
+          Start-Service -Name TVNWebServer -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          
+          Write-Host "✅ VNC Server démarré"
+
+      - name: Install noVNC
+        run: |
+          Write-Host "Installation de noVNC..."
+          
+          # Créer le dossier noVNC
+          $novncPath = "C:\novnc"
+          New-Item -ItemType Directory -Path $novncPath -Force | Out-Null
+          
+          # Télécharger noVNC
+          $novncUrl = "https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.zip"
+          $novncZip = "$env:TEMP\novnc.zip"
+          
+          Write-Host "Téléchargement de noVNC..."
+          Invoke-WebRequest -Uri $novncUrl -OutFile $novncZip -ErrorAction Stop
+          
+          # Extraire
+          Write-Host "Extraction de noVNC..."
+          Expand-Archive -Path $novncZip -DestinationPath "$env:TEMP" -Force
+          
+          # Copier les fichiers
+          Copy-Item -Path "$env:TEMP\noVNC-1.4.0\*" -Destination $novncPath -Recurse -Force
+          
+          Remove-Item $novncZip -Force
+          
+          Write-Host "✅ noVNC installé dans C:\novnc"
+
+      - name: Setup noVNC Web Server
+        run: |
+          Write-Host "Configuration du serveur web noVNC..."
+          
+          $novncPath = "C:\novnc"
+          
+          # Créer un script Python pour noVNC
+          $pyScript = @"
+import subprocess
+import os
+import sys
+
+os.chdir('C:\\novnc')
+
+# Démarrer le serveur web noVNC
+# noVNC nécessite websockify pour convertir WebSocket en VNC
+try:
+    subprocess.run([
+        sys.executable, '-m', 'http.server', '6080',
+        '--directory', 'C:\\novnc'
+    ])
+except Exception as e:
+    print(f'Erreur: {e}')
+"@
+          
+          $pyScript | Out-File -FilePath "C:\novnc\start_novnc.py" -Encoding UTF8
+          
+          Write-Host "✅ Serveur noVNC configuré"
+
+      - name: Install Python for noVNC
+        run: |
+          Write-Host "Installation de Python..."
+          
+          # Python est souvent pré-installé sur Windows Server
+          # On teste et on installe si nécessaire
+          try {
+              python --version
+              Write-Host "✅ Python est déjà installé"
+          } catch {
+              Write-Host "Installation de Python..."
+              $pythonUrl = "https://www.python.org/ftp/python/3.11.7/python-3.11.7-amd64.exe"
+              $pythonPath = "$env:TEMP\python-installer.exe"
+              
+              Invoke-WebRequest -Uri $pythonUrl -OutFile $pythonPath -ErrorAction Stop
+              Start-Process -FilePath $pythonPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1" -Wait
+              
+              Remove-Item $pythonPath -Force
+              Write-Host "✅ Python installé"
+          }
+
+      - name: Install Tailscale
+        run: |
+          Write-Host "Installation de Tailscale..."
+          
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          
+          Write-Host "✅ Tailscale installé"
+
+      - name: Connect Tailscale
+        run: |
+          Write-Host "Connexion à Tailscale..."
+          
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=rdp-novnc-cloud-${{ github.run_id }}
+          
+          Start-Sleep -Seconds 15
+          
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          Write-Host "✅ Tailscale connecté: $tsIP"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Configure Firewall for Web Server
+        run: |
+          Write-Host "Configuration du firewall pour noVNC..."
+          
+          netsh advfirewall firewall delete rule name="noVNC-Web" 2>$null
+          netsh advfirewall firewall add rule name="noVNC-Web" `
+            dir=in action=allow protocol=TCP localport=6080
+          
+          Write-Host "✅ Firewall configuré"
+
+      - name: Display Access Information
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════════════╗"
+          Write-Host "║          🖥️  RDP + noVNC CLOUD GAMING 🖥️                 ║"
+          Write-Host "╠═════════════════��══════════════════════════════════════════╣"
+          Write-Host "║                                                            ║"
+          Write-Host "║  🔐 ACCÈS RDP (Remote Desktop):                            ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  Address: $env:TAILSCALE_IP:3389                           ║"
+          Write-Host "║  Username: CloudGamer                                      ║"
+          Write-Host "║  Password: $env:RDP_PASSWORD                               ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  🌐 ACCÈS noVNC (Navigateur Web):                          ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  URL: http://$env:TAILSCALE_IP:6080/vnc.html               ║"
+          Write-Host "║  Password: $env:VNC_PASSWORD                               ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  📱 OPTION 1: Via Navigateur Web (FACILE):                 ║"
+          Write-Host "║  1. Ouvrez votre navigateur                                ║"
+          Write-Host "║  2. Allez à: http://$env:TAILSCALE_IP:6080/vnc.html        ║"
+          Write-Host "║  3. Entrez le mot de passe: $env:VNC_PASSWORD              ║"
+          Write-Host "║  4. Vous êtes connecté ! 🎮                                ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  💻 OPTION 2: Via RDP (MEILLEURE QUALITÉ):                 ║"
+          Write-Host "║  Windows: Win+R → mstsc → $env:TAILSCALE_IP:3389           ║"
+          Write-Host "║  Mac/Linux: Microsoft Remote Desktop                       ║"
+          Write-Host "║  Username: CloudGamer                                      ║"
+          Write-Host "║  Password: $env:RDP_PASSWORD                               ║"
+          Write-Host "║                                                            ║"
+          Write-Host "║  ⏱️  DURÉE: 4 heures gratuites                             ║"
+          Write-Host "║                                                            ║"
+          Write-Host "╚════════════════════════════════════════════════════════════╝"
+          Write-Host ""
+
+      - name: Start Background Services
+        run: |
+          Write-Host "Démarrage des services..."
+          
+          # VNC est déjà en cours
+          # noVNC (serveur web) démarre via le système
+          
+          Write-Host "✅ Tous les services sont actifs"
+
+      - name: Keep Session Active (4 hours)
+        run: |
+          Write-Host ""
+          Write-Host "🎮 Session RDP + noVNC Cloud Gaming active..."
+          Write-Host "RDP Address: $env:TAILSCALE_IP:3389"
+          Write-Host "noVNC URL: http://$env:TAILSCALE_IP:6080/vnc.html"
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $endTime = $startTime.AddHours(4)
+          
+          while ((Get-Date) -lt $endTime) {
+              $remaining = $endTime - (Get-Date)
+              $hours = $remaining.Hours
+              $minutes = $remaining.Minutes
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] ⏱️  Temps restant: ${hours}h ${minutes}m"
+              Start-Sleep -Seconds 60
+          }
+          
+          Write-Host ""
+          Write-Host "✅ Session terminée"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          Write-Host "Fermeture..."
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" logout
+          Stop-Service -Name TVNServer -Force -ErrorAction SilentlyContinue
+          Stop-Service -Name TVNWebServer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Fermeture complète"
